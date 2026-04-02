@@ -541,10 +541,13 @@ export default function Index() {
 
           {/* Leaflet map */}
           <MapContainer
-            center={[55.758, 37.625]}
-            zoom={14}
+            center={[20, 0]}
+            zoom={2}
             style={{ width: "100%", height: "100%" }}
             zoomControl={false}
+            minZoom={2}
+            maxBounds={[[-90, -180], [90, 180]]}
+            maxBoundsViscosity={1.0}
           >
             <TileLayer
               url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
