@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef } from "react";
+import { MapContainer, TileLayer, Marker, Popup, useMap } from "react-leaflet";
+import L from "leaflet";
 import Icon from "@/components/ui/icon";
 
 const TRANSPORT_TYPES = [
@@ -20,14 +22,14 @@ const MOCK_ROUTES = [
 ];
 
 const MOCK_VEHICLES = [
-  { id: 1, type: "bus", number: "47", x: 22, y: 34, speed: 42, passengers: 28, capacity: 60 },
-  { id: 2, type: "tram", number: "5", x: 55, y: 48, speed: 28, passengers: 45, capacity: 120 },
-  { id: 3, type: "metro", number: "М1", x: 70, y: 62, speed: 65, passengers: 180, capacity: 300 },
-  { id: 4, type: "bus", number: "12", x: 38, y: 72, speed: 38, passengers: 15, capacity: 60 },
-  { id: 5, type: "trolley", number: "3", x: 82, y: 28, speed: 30, passengers: 22, capacity: 80 },
-  { id: 6, type: "water", number: "В1", x: 15, y: 80, speed: 18, passengers: 8, capacity: 40 },
-  { id: 7, type: "train", number: "Э9", x: 60, y: 18, speed: 90, passengers: 240, capacity: 500 },
-  { id: 8, type: "minibus", number: "К7", x: 44, y: 55, speed: 55, passengers: 12, capacity: 20 },
+  { id: 1, type: "bus", number: "47", lat: 55.762, lng: 37.618, speed: 42, passengers: 28, capacity: 60 },
+  { id: 2, type: "tram", number: "5", lat: 55.758, lng: 37.632, speed: 28, passengers: 45, capacity: 120 },
+  { id: 3, type: "metro", number: "М1", lat: 55.753, lng: 37.621, speed: 65, passengers: 180, capacity: 300 },
+  { id: 4, type: "bus", number: "12", lat: 55.766, lng: 37.608, speed: 38, passengers: 15, capacity: 60 },
+  { id: 5, type: "trolley", number: "3", lat: 55.749, lng: 37.641, speed: 30, passengers: 22, capacity: 80 },
+  { id: 6, type: "water", number: "В1", lat: 55.745, lng: 37.598, speed: 18, passengers: 8, capacity: 40 },
+  { id: 7, type: "train", number: "Э9", lat: 55.771, lng: 37.650, speed: 90, passengers: 240, capacity: 500 },
+  { id: 8, type: "minibus", number: "К7", lat: 55.756, lng: 37.627, speed: 55, passengers: 12, capacity: 20 },
 ];
 
 const TYPE_COLORS: Record<string, string> = {
@@ -50,6 +52,16 @@ const TYPE_ICONS: Record<string, string> = {
   minibus: "Van",
 };
 
+const TYPE_LABELS: Record<string, string> = {
+  bus: "Автобус",
+  tram: "Трамвай",
+  trolley: "Троллейбус",
+  metro: "Метро",
+  train: "Поезд",
+  water: "Водный",
+  minibus: "Маршрутка",
+};
+
 const SCHEDULE_DATA = [
   { route: "А-47", type: "bus", stops: ["Центр", "Рынок", "Парк", "Школа №3", "Конечная"], times: ["08:00", "08:12", "08:24", "08:36", "08:50"] },
   { route: "Т-5", type: "tram", stops: ["Депо", "Площадь", "Проспект", "Больница", "Вокзал"], times: ["07:30", "07:44", "07:58", "08:10", "08:22"] },
@@ -57,160 +69,94 @@ const SCHEDULE_DATA = [
   { route: "В-1", type: "water", stops: ["Речной порт", "Набережная", "Остров", "Яхт-клуб"], times: ["09:00", "09:20", "09:40", "10:00"] },
 ];
 
-function MapCanvas({ activeFilter }: { activeFilter: string }) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const animRef = useRef<number>(0);
-  const positionsRef = useRef(
-    MOCK_VEHICLES.map(v => ({ ...v, vx: (Math.random() - 0.5) * 0.12, vy: (Math.random() - 0.5) * 0.08 }))
-  );
+function makeVehicleIcon(type: string, number: string) {
+  const color = TYPE_COLORS[type] || "#fff";
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="48" height="32" viewBox="0 0 48 32">
+      <rect x="1" y="1" width="46" height="30" rx="8" fill="#0a0e1a" stroke="${color}" stroke-width="1.5"/>
+      <text x="24" y="21" text-anchor="middle" font-family="Golos Text,sans-serif" font-weight="700" font-size="13" fill="${color}">${number}</text>
+    </svg>
+  `;
+  return L.divIcon({
+    html: svg,
+    className: "",
+    iconSize: [48, 32],
+    iconAnchor: [24, 16],
+    popupAnchor: [0, -18],
+  });
+}
+
+function AnimatedVehicles({ vehicles, activeFilter }: { vehicles: typeof MOCK_VEHICLES, activeFilter: string }) {
+  const map = useMap();
+  const posRef = useRef(vehicles.map(v => ({
+    ...v,
+    dlat: (Math.random() - 0.5) * 0.0003,
+    dlng: (Math.random() - 0.5) * 0.0004,
+  })));
+  const markersRef = useRef<Record<number, L.Marker>>({});
+  const rafRef = useRef<number>(0);
+  const lastTickRef = useRef<number>(0);
 
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
+    posRef.current.forEach(v => {
+      if (activeFilter !== "all" && v.type !== activeFilter) {
+        markersRef.current[v.id]?.remove();
+        delete markersRef.current[v.id];
+        return;
+      }
+      if (!markersRef.current[v.id]) {
+        const marker = L.marker([v.lat, v.lng], { icon: makeVehicleIcon(v.type, v.number) });
+        const fill = Math.round((v.passengers / v.capacity) * 100);
+        marker.bindPopup(`
+          <div style="font-family:'Golos Text',sans-serif;min-width:140px;background:#0e1425;border:1px solid ${TYPE_COLORS[v.type]}40;border-radius:12px;padding:12px;color:#fff;">
+            <div style="font-weight:700;color:${TYPE_COLORS[v.type]};margin-bottom:4px;">${TYPE_LABELS[v.type]} №${v.number}</div>
+            <div style="font-size:11px;color:rgba(255,255,255,0.55);margin-bottom:2px;">Скорость: ${v.speed} км/ч</div>
+            <div style="font-size:11px;color:rgba(255,255,255,0.55);">Пассажиры: ${v.passengers}/${v.capacity} (${fill}%)</div>
+          </div>
+        `, { className: "kp-popup" });
+        marker.addTo(map);
+        markersRef.current[v.id] = marker;
+      }
+    });
 
-    const resize = () => {
-      canvas.width = canvas.offsetWidth * window.devicePixelRatio;
-      canvas.height = canvas.offsetHeight * window.devicePixelRatio;
-      ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+    Object.keys(markersRef.current).forEach(idStr => {
+      const id = Number(idStr);
+      const v = posRef.current.find(x => x.id === id);
+      if (!v) return;
+      if (activeFilter !== "all" && v.type !== activeFilter) {
+        markersRef.current[id].remove();
+        delete markersRef.current[id];
+      }
+    });
+
+    const tick = (ts: number) => {
+      if (ts - lastTickRef.current > 80) {
+        lastTickRef.current = ts;
+        posRef.current = posRef.current.map(v => {
+          let nlat = v.lat + v.dlat;
+          let nlng = v.lng + v.dlng;
+          if (nlat > 55.78 || nlat < 55.73) v.dlat *= -1;
+          if (nlng > 37.67 || nlng < 37.58) v.dlng *= -1;
+          nlat = Math.max(55.73, Math.min(55.78, nlat));
+          nlng = Math.max(37.58, Math.min(37.67, nlng));
+          if (markersRef.current[v.id]) {
+            markersRef.current[v.id].setLatLng([nlat, nlng]);
+          }
+          return { ...v, lat: nlat, lng: nlng };
+        });
+      }
+      rafRef.current = requestAnimationFrame(tick);
     };
-    resize();
-    window.addEventListener("resize", resize);
+    rafRef.current = requestAnimationFrame(tick);
 
-    const draw = () => {
-      const W = canvas.offsetWidth;
-      const H = canvas.offsetHeight;
-      ctx.clearRect(0, 0, W, H);
-
-      // Roads
-      const roads = [
-        { x1: 0.05, y1: 0.5, x2: 0.95, y2: 0.5 },
-        { x1: 0.5, y1: 0.03, x2: 0.5, y2: 0.97 },
-        { x1: 0.15, y1: 0.15, x2: 0.85, y2: 0.85 },
-        { x1: 0.15, y1: 0.85, x2: 0.85, y2: 0.15 },
-        { x1: 0.25, y1: 0.03, x2: 0.25, y2: 0.97 },
-        { x1: 0.75, y1: 0.03, x2: 0.75, y2: 0.97 },
-        { x1: 0.05, y1: 0.3, x2: 0.95, y2: 0.3 },
-        { x1: 0.05, y1: 0.7, x2: 0.95, y2: 0.7 },
-      ];
-      roads.forEach(r => {
-        ctx.beginPath();
-        ctx.strokeStyle = "rgba(255,255,255,0.07)";
-        ctx.lineWidth = 10;
-        ctx.moveTo(r.x1 * W, r.y1 * H);
-        ctx.lineTo(r.x2 * W, r.y2 * H);
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.strokeStyle = "rgba(255,255,255,0.15)";
-        ctx.lineWidth = 1;
-        ctx.setLineDash([10, 10]);
-        ctx.moveTo(r.x1 * W, r.y1 * H);
-        ctx.lineTo(r.x2 * W, r.y2 * H);
-        ctx.stroke();
-        ctx.setLineDash([]);
-      });
-
-      // River
-      ctx.beginPath();
-      ctx.strokeStyle = "rgba(96,165,250,0.3)";
-      ctx.lineWidth = 16;
-      ctx.moveTo(0, H * 0.75);
-      ctx.bezierCurveTo(W * 0.25, H * 0.7, W * 0.55, H * 0.8, W, H * 0.76);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.strokeStyle = "rgba(96,165,250,0.1)";
-      ctx.lineWidth = 26;
-      ctx.moveTo(0, H * 0.75);
-      ctx.bezierCurveTo(W * 0.25, H * 0.7, W * 0.55, H * 0.8, W, H * 0.76);
-      ctx.stroke();
-
-      // City blocks
-      const blocks = [
-        [0.05, 0.05, 0.18, 0.22], [0.28, 0.05, 0.45, 0.2],
-        [0.55, 0.05, 0.68, 0.2], [0.76, 0.05, 0.92, 0.22],
-        [0.05, 0.35, 0.18, 0.44], [0.55, 0.35, 0.68, 0.44],
-        [0.76, 0.35, 0.92, 0.44], [0.05, 0.56, 0.18, 0.65],
-      ];
-      blocks.forEach(([x, y, x2, y2]) => {
-        ctx.fillStyle = "rgba(255,255,255,0.03)";
-        ctx.fillRect(x * W, y * H, (x2 - x) * W, (y2 - y) * H);
-        ctx.strokeStyle = "rgba(255,255,255,0.07)";
-        ctx.lineWidth = 1;
-        ctx.strokeRect(x * W, y * H, (x2 - x) * W, (y2 - y) * H);
-      });
-
-      // Stops
-      const stops = [
-        { x: 0.5, y: 0.5 }, { x: 0.25, y: 0.5 }, { x: 0.75, y: 0.5 },
-        { x: 0.5, y: 0.3 }, { x: 0.5, y: 0.7 }, { x: 0.25, y: 0.3 },
-      ];
-      stops.forEach(s => {
-        ctx.beginPath();
-        ctx.arc(s.x * W, s.y * H, 5, 0, Math.PI * 2);
-        ctx.fillStyle = "rgba(255,255,255,0.15)";
-        ctx.fill();
-        ctx.strokeStyle = "rgba(255,255,255,0.3)";
-        ctx.lineWidth = 1;
-        ctx.stroke();
-      });
-
-      // Update positions
-      positionsRef.current = positionsRef.current.map(v => {
-        let nx = v.x + v.vx;
-        let ny = v.y + v.vy;
-        if (nx > 94 || nx < 6) v.vx *= -1;
-        if (ny > 88 || ny < 6) v.vy *= -1;
-        nx = Math.max(6, Math.min(94, nx));
-        ny = Math.max(6, Math.min(88, ny));
-        return { ...v, x: nx, y: ny };
-      });
-
-      // Draw vehicles
-      positionsRef.current.forEach(v => {
-        if (activeFilter !== "all" && v.type !== activeFilter) return;
-        const px = v.x / 100 * W;
-        const py = v.y / 100 * H;
-        const color = TYPE_COLORS[v.type] || "#fff";
-
-        const grad = ctx.createRadialGradient(px, py, 0, px, py, 22);
-        grad.addColorStop(0, color + "50");
-        grad.addColorStop(1, "transparent");
-        ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.arc(px, py, 22, 0, Math.PI * 2);
-        ctx.fill();
-
-        ctx.beginPath();
-        ctx.arc(px, py, 7, 0, Math.PI * 2);
-        ctx.fillStyle = color;
-        ctx.fill();
-        ctx.strokeStyle = "rgba(255,255,255,0.5)";
-        ctx.lineWidth = 2;
-        ctx.stroke();
-
-        const lw = 30;
-        ctx.fillStyle = "rgba(0,0,0,0.8)";
-        ctx.beginPath();
-        ctx.roundRect(px + 10, py - 11, lw, 15, 4);
-        ctx.fill();
-        ctx.fillStyle = color;
-        ctx.font = "bold 8px 'Golos Text', sans-serif";
-        ctx.textAlign = "center";
-        ctx.fillText(v.number, px + 10 + lw / 2, py + 0.5);
-      });
-
-      animRef.current = requestAnimationFrame(draw);
-    };
-
-    draw();
     return () => {
-      cancelAnimationFrame(animRef.current);
-      window.removeEventListener("resize", resize);
+      cancelAnimationFrame(rafRef.current);
+      Object.values(markersRef.current).forEach(m => m.remove());
+      markersRef.current = {};
     };
-  }, [activeFilter]);
+  }, [activeFilter, map]);
 
-  return <canvas ref={canvasRef} className="w-full h-full" style={{ display: "block" }} />;
+  return null;
 }
 
 function VehicleCard3D({ vehicle }: { vehicle: typeof MOCK_VEHICLES[0] }) {
@@ -272,9 +218,6 @@ export default function Index() {
     { id: 3, text: "Поезд П-120Э отправляется вовремя", type: "train", read: true },
   ]);
   const [showNotif, setShowNotif] = useState(false);
-  const [is3D, setIs3D] = useState(false);
-  const [tiltX, setTiltX] = useState(0);
-  const [tiltY, setTiltY] = useState(0);
   const [notifRead, setNotifRead] = useState(false);
 
   useEffect(() => {
@@ -329,7 +272,7 @@ export default function Index() {
             </button>
 
             {showNotif && (
-              <div className="absolute top-full right-0 mt-2 w-76 rounded-2xl overflow-hidden z-50 animate-fade-in-up shadow-2xl"
+              <div className="absolute top-full right-0 mt-2 rounded-2xl overflow-hidden z-50 animate-fade-in-up shadow-2xl"
                 style={{ background: "rgba(8,12,24,0.97)", border: "1px solid rgba(0,212,255,0.15)", backdropFilter: "blur(20px)", width: 300 }}>
                 <div className="px-4 py-3 border-b border-white/5 flex items-center justify-between">
                   <span className="text-sm font-semibold text-white">Уведомления</span>
@@ -586,56 +529,33 @@ export default function Index() {
 
         {/* Map */}
         <div className="flex-1 relative overflow-hidden">
-          {/* Controls */}
-          <div className="absolute top-4 right-4 z-20 flex flex-col gap-2">
-            <button onClick={() => setIs3D(!is3D)} title="3D режим"
-              className="w-9 h-9 rounded-xl flex items-center justify-center transition-all"
-              style={{ background: "rgba(6,9,20,0.9)", border: is3D ? "1px solid rgba(0,212,255,0.5)" : "1px solid rgba(255,255,255,0.08)", backdropFilter: "blur(10px)" }}>
-              <Icon name="Box" size={16} className={is3D ? "neon-text" : "text-white/45"} />
-            </button>
-            {["Plus", "Minus", "Compass"].map(icon => (
-              <button key={icon} className="w-9 h-9 rounded-xl flex items-center justify-center transition-all"
-                style={{ background: "rgba(6,9,20,0.9)", border: "1px solid rgba(255,255,255,0.07)", backdropFilter: "blur(10px)" }}>
-                <Icon name={icon} size={16} className="text-white/45" />
-              </button>
-            ))}
-          </div>
-
           {/* LIVE badge */}
-          <div className="absolute top-4 left-4 z-20 flex items-center gap-2 px-3 py-2 rounded-xl"
+          <div className="absolute top-4 left-4 z-[1000] flex items-center gap-2 px-3 py-2 rounded-xl pointer-events-none"
             style={{ background: "rgba(6,9,20,0.9)", border: "1px solid rgba(0,255,136,0.2)", backdropFilter: "blur(10px)" }}>
             <div className="w-2 h-2 rounded-full animate-dot-blink" style={{ background: "#00ff88" }} />
             <span className="text-xs font-bold" style={{ color: "#00ff88" }}>LIVE</span>
-            <span className="text-xs text-white/40">{MOCK_VEHICLES.length} ТС</span>
+            <span className="text-xs text-white/40">
+              {activeFilter === "all" ? MOCK_VEHICLES.length : MOCK_VEHICLES.filter(v => v.type === activeFilter).length} ТС
+            </span>
           </div>
 
-          {is3D && (
-            <div className="absolute top-16 left-4 z-20 px-3 py-1.5 rounded-xl text-xs neon-text font-semibold animate-fade-in-up"
-              style={{ background: "rgba(0,212,255,0.1)", border: "1px solid rgba(0,212,255,0.3)" }}>
-              3D режим — вращайте карту
-            </div>
-          )}
-
-          {/* Canvas map */}
-          <div className="w-full h-full map-grid"
-            style={{
-              background: "linear-gradient(180deg, #05080f 0%, #070b18 100%)",
-              transition: "transform 0.15s ease",
-              transform: is3D ? `perspective(1000px) rotateX(${tiltX}deg) rotateY(${tiltY}deg)` : "none",
-            }}
-            onMouseMove={e => {
-              if (!is3D) return;
-              const rect = e.currentTarget.getBoundingClientRect();
-              setTiltX(-((e.clientY - rect.top - rect.height / 2) / rect.height) * 20);
-              setTiltY(((e.clientX - rect.left - rect.width / 2) / rect.width) * 12);
-            }}
-            onMouseLeave={() => { setTiltX(0); setTiltY(0); }}>
-            <MapCanvas activeFilter={activeFilter} />
-          </div>
+          {/* Leaflet map */}
+          <MapContainer
+            center={[55.758, 37.625]}
+            zoom={14}
+            style={{ width: "100%", height: "100%" }}
+            zoomControl={false}
+          >
+            <TileLayer
+              url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+              attribution='&copy; <a href="https://carto.com/">CARTO</a>'
+            />
+            <AnimatedVehicles vehicles={MOCK_VEHICLES} activeFilter={activeFilter} />
+          </MapContainer>
 
           {/* Bottom strip */}
-          <div className="absolute bottom-0 left-0 right-0 px-5 py-3 flex items-center justify-between"
-            style={{ background: "linear-gradient(0deg, rgba(5,8,15,0.95), transparent)" }}>
+          <div className="absolute bottom-0 left-0 right-0 px-5 py-3 flex items-center justify-between z-[1000] pointer-events-none"
+            style={{ background: "linear-gradient(0deg, rgba(5,8,15,0.9), transparent)" }}>
             <div className="flex items-center gap-4">
               {TRANSPORT_TYPES.slice(1).map(t => (
                 <div key={t.id} className="flex items-center gap-1.5">
@@ -662,6 +582,18 @@ export default function Index() {
           </button>
         </div>
       )}
+
+      {/* Popup styles */}
+      <style>{`
+        .kp-popup .leaflet-popup-content-wrapper {
+          background: transparent !important;
+          box-shadow: none !important;
+          padding: 0 !important;
+          border-radius: 12px !important;
+        }
+        .kp-popup .leaflet-popup-content { margin: 0 !important; }
+        .kp-popup .leaflet-popup-tip-container { display: none; }
+      `}</style>
     </div>
   );
 }
